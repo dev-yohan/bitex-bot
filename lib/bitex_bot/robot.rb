@@ -150,6 +150,14 @@ module BitexBot
       return false
     end  
 
+    def notify_currency_status(currency, warning, total)
+      if warning && total <= warning
+        notify("#{currency.uppercase} balance is too low, it's #{total},"\
+          "make it #{warning} to stop this warning.")
+        store.update_attributes(last_warning: Time.now)
+      end
+    end  
+
     def update_store(balances, profile)
       last_log = `tail -c 61440 #{Settings.log.try(:file)}` if Settings.log.try(:file)
       total_usd = balances['usd_balance'].to_d + profile[:usd_balance]
@@ -159,17 +167,8 @@ module BitexBot
         taker_btc: balances['btc_balance'], log: last_log)
       
       if store.last_warning.nil? || store.last_warning < 30.minutes.ago 
-        if store.usd_warning && total_usd <= store.usd_warning
-          notify("USD balance is too low, it's #{total_usd},"\
-            "make it #{store.usd_warning} to stop this warning.")
-          store.update_attributes(last_warning: Time.now)
-        end
-
-        if store.btc_warning && total_btc <= store.btc_warning
-          notify("BTC balance is too low, it's #{total_btc},"\
-            "make it #{store.btc_warning} to stop this warning.")
-          store.update_attributes(last_warning: Time.now)
-        end
+        notify_currency_status('usd', store.usd_warning, total_usd)
+        notify_currency_status('btc', store.btc_warning, total_btc)
       end
     end  
 

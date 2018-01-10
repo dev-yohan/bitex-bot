@@ -126,31 +126,14 @@ module BitexBot
       BuyClosingFlow.active.exists? || SellClosingFlow.active.exists?
     end
 
-    def cant_open_flow?(recent_buying, recent_selling) 
-      if store.reload.hold?
-        BitexBot::Robot.logger.debug("Not placing new orders because of hold")
-        return true
-      end
-
-      if active_closing_flows?
-        BitexBot::Robot.logger.debug("Not placing new orders, closing flows.")
-        return true
-      end
-
-      if self.class.graceful_shutdown
-        BitexBot::Robot.logger.debug("Not placing new orders, shutting down.")
-        return true
-      end
-
-      if recent_buying && recent_selling
-        BitexBot::Robot.logger.debug("Not placing new orders, recent ones exist.")
-        return true
-      end
-
-      return false
+    def cant_open_flow?(rule, logging)
+      if lambda{rule}.call
+        BitexBot::Robot.logger.debug()
+        true
+      end  
     end  
 
-    def notify_currency_status(currency, warning, total)
+    def notify_currency_balance_status(currency, warning, total)
       if warning && total <= warning
         notify("#{currency.uppercase} balance is too low, it's #{total},"\
           "make it #{warning} to stop this warning.")
@@ -167,30 +150,24 @@ module BitexBot
         taker_btc: balances['btc_balance'], log: last_log)
       
       if store.last_warning.nil? || store.last_warning < 30.minutes.ago 
-        notify_currency_status('usd', store.usd_warning, total_usd)
-        notify_currency_status('btc', store.btc_warning, total_btc)
+        notify_currency_balance_status('usd', store.usd_warning, total_usd)
+        notify_currency_balance_status('btc', store.btc_warning, total_btc)
       end
     end  
 
-    def is_target_achieved?(currency)
-      if currency == 'usd'
-        if store.usd_stop && total_usd <= store.usd_stop
-          BitexBot::Robot.logger.debug("Not placing new orders, USD target not met")
-          return false 
-        else
-          return true
-        end
-      elsif currency == 'btc'
-        if store.btc_stop && total_btc <= store.btc_stop
-          BitexBot::Robot.logger.debug("Not placing new orders, BTC target not met")
-          return false
-        else
-          return true  
-        end
-      end  
+    def is_target_achieved?(target_expression, message)
+      if lambda{target_expression}.call
+        BitexBot::Robot.logger.debug(message)
+        false
+      else
+        true  
+      end     
     end  
 
-    def create_market_flow(operation, balances, order_book, transactions, profile)
+    def create_market_flow(operation, balances, profile)
+      order_book   = with_cooldown{ BitexBot::Robot.taker.order_book }
+      transactions = with_cooldown{ BitexBot::Robot.taker.transactions }
+
       if operation == 'buy'
         BuyOpeningFlow.create_for_market(
           balances['btc_available'].to_d,
@@ -215,24 +192,25 @@ module BitexBot
         threshold = (Settings.time_to_live / 2).seconds.ago
         kind.active.where('created_at > ?', threshold).first
       end
-
-      return if cant_open_flow?(recent_buying, recent_selling) 
+ 
+      return if cant_open_flow?(store.reload.hold?, "Not placing new orders because of hold.")
+      return if cant_open_flow?(active_closing_flows?, "Not placing new orders, closing flows.")
+      return if cant_open_flow?(self.class.graceful_shutdown, "Not placing new orders, shutting down.")
+      return if cant_open_flow?(recent_buying && recent_selling, "Not placing new orders, recent ones exist.")
 
       balances = with_cooldown{ BitexBot::Robot.taker.balance }
       profile = Bitex::Profile.get
       
       update_store(balances, profile)
 
-      return if !is_target_achieved?('usd') || !is_target_achieved?('btc')
+      return if !is_target_achieved?(store.usd_stop && total_usd <= store.usd_stop, "Not placing new orders, USD target not met")
+      return if !is_target_achieved?(store.btc_stop && total_btc <= store.btc_stop, "Not placing new orders, BTC target not met")
       
-      order_book = with_cooldown{ BitexBot::Robot.taker.order_book }
-      transactions = with_cooldown{ BitexBot::Robot.taker.transactions }
-
       unless recent_buying
-        create_market_flow('buy', balances, order_book, transactions, profile)
+        create_market_flow('buy', balances, profile)
       end
       unless recent_selling
-        create_market_flow('sell', balances, order_book, transactions, profile)
+        create_market_flow('sell', balances, profile)
       end
     end
     
